@@ -226,7 +226,7 @@ load_ovs_bridges()
     # loads all bridges in ovs
 
     readarray -t bridges<<<"`get_ovs_vsctl_show| \
-        sed -r 's/.*Bridge\s+\"?([[:alnum:]\-]+)\"*/\1/g;t;d'`"
+        sed -nr 's/.*Bridge\s+\"?([[:alnum:]\-]+)\"*/\1/p'`"
     mkdir -p $RESULTS_PATH_HOST/ovs/bridges
     ((${#bridges[@]})) && [ -n "${bridges[0]}" ] || return
     for bridge in ${bridges[@]}; do
@@ -249,7 +249,7 @@ load_ovs_bridges_ports()
     local current_jobs=0
     for bridge in `ls $RESULTS_PATH_HOST/ovs/bridges`; do
         readarray -t ports<<<"`get_ovs_ofctl_show $bridge| \
-            sed -r 's/^\s+([[:digit:]]+)\((.+)\):\s+.+/\1:\2/g;t;d'`"
+            sed -nr 's/^\s+([[:digit:]]+)\((.+)\):\s+.+/\1:\2/p'`"
         mkdir -p $RESULTS_PATH_HOST/ovs/bridges/$bridge/ports
         ((${#ports[@]})) && [ -n "${ports[0]}" ] || continue
         for port in "${ports[@]}"; do
@@ -289,7 +289,7 @@ load_bridges_port_vlans ()
         for port in `get_ovs_bridge_ports $bridge`; do
             readarray -t vlans<<<"`get_ovs_vsctl_show $bridge| \
                 grep -A 1 \"Port \\\"$port\\\"\"| \
-                    sed -r 's/.+tag:\s+([[:digit:]]+)/\1/g;t;d'| \
+                    sed -rn 's/.+tag:\s+([[:digit:]]+)/\1/p'| \
                     sort -n | uniq`"
             ((${#vlans[@]})) && [ -n "${vlans[0]}" ] || continue
             for vlan in ${vlans[@]}; do
@@ -317,9 +317,9 @@ load_bridges_flow_vlans ()
     for bridge in `ls $RESULTS_PATH_HOST/ovs/bridges`; do
         bridge_flows_out=$SCRATCH_AREA/bridge_flow_vlans.$$.`date +%s`
         get_ovs_ofctl_dump_flows $bridge > $bridge_flows_out
-        readarray -t vlans<<<"`sed -r -e "s/$sed_flow_vlan_regex1/\1/g" \
-                                      -e "s/$sed_flow_vlan_regex2/\1/g;t;d" \
-                                      $bridge_flows_out | \
+        readarray -t vlans<<<"`sed -rn -e "s/$sed_flow_vlan_regex1/\1/p" \
+                                       -e "s/$sed_flow_vlan_regex2/\1/p" \
+                                       $bridge_flows_out | \
                                sort -n| uniq`"
         flow_vlans_root=$RESULTS_PATH_HOST/ovs/bridges/$bridge/flowinfo/vlans
         mkdir -p $flow_vlans_root
@@ -356,16 +356,16 @@ load_bridges_port_macs ()
             {
             [ -e "$RESULTS_PATH_HOST/ovs/ports/$port/hwaddr" ] && continue
             local mac=`get_ovs_ofctl_show $bridge| \
-                 sed -r "s/^\s+.+\($port\):\s+addr:(.+)/\1/g;t;d"`
+                         sed -rn "s/^\s+.+\($port\):\s+addr:(.+)/\1/p"`
             echo $mac > $RESULTS_PATH_HOST/ovs/ports/$port/hwaddr
 
             # if the port is one of gre|vxlan then it will have tunnel endpoint address info in ovs
             local section=`sed -rn "/^mac_in_use\s+:\s+\"$mac\".*/,/^type\s+:\s+.+/p;" $ovsdb_client_list_out`
             `echo "$section"| tail -n 1| egrep -q "^type\s+:\s+(vxlan|gre)"` || continue
             local options=`echo $section| grep options`
-            local type=`echo "$section"| sed -r 's/^type\s+:\s+(.+)\s*/\1/g;t;d'`
-            local local_ip=`echo $options| sed -r 's/.+local_ip="([[:digit:]\.]+)".+/\1/g'`
-            local remote_ip=`echo $options| sed -r 's/.+remote_ip="([[:digit:]\.]+)".+/\1/g'`
+            local type=`echo "$section"| sed -rn 's/^type\s+:\s+(.+)\s*/\1/p'`
+            local local_ip=`echo $options| sed -rn 's/.+local_ip="([[:digit:]\.]+)".+/\1/p'`
+            local remote_ip=`echo $options| sed -rn 's/.+remote_ip="([[:digit:]\.]+)".+/\1/p'`
             echo $type > $RESULTS_PATH_HOST/ovs/ports/$port/type
             echo $local_ip > $RESULTS_PATH_HOST/ovs/ports/$port/local_ip
             echo $remote_ip > $RESULTS_PATH_HOST/ovs/ports/$port/remote_ip
@@ -401,11 +401,11 @@ load_bridges_port_ns_attach_info ()
 
             # first try linux
             ns_id=`get_ip_link_show| grep -A 1 " $port:"| \
-                       sed -r 's/.+link-netnsid ([[:digit:]]+)\s*.*/\1/g;t;d'`
+                       sed -rn 's/.+link-netnsid ([[:digit:]]+)\s*.*/\1/p'`
             ns_name=
             if [ -n "$ns_id" ]; then
                 ns_name=`get_ip_netns| grep "(id: $ns_id)"| \
-                            sed -r 's/\s+\(id:\s+.+\)//g'`
+                            sed -r 's/\s+\(id:\s+.+\)//'`
             else
                 # then try searching all ns since ovs does not provide info about which namespace a port maps to.
                 ns_name="`get_ns_ip_addr_show_all| egrep "netns:|${port_suffix}"| grep -B 1 $port_suffix| head -n 1`" || true
@@ -414,14 +414,14 @@ load_bridges_port_ns_attach_info ()
 
             if [ -n "$ns_name" ]; then
                 mkdir -p $RESULTS_PATH_HOST/linux/namespaces/$ns_name/ports
-                if_id=`get_ip_link_show| grep $port| sed -r "s/.+${port}@if([[:digit:]]+):\s+.+/\1/g"`
+                if_id=`get_ip_link_show| grep $port| sed -rn "s/.+${port}@if([[:digit:]]+):\s+.+/\1/p"`
 
                 if [ -n "$if_id" ]; then
                     ns_port="`get_ns_ip_addr_show $ns_name| 
-                           sed -r \"s,^${if_id}:\s+(.+)@[[:alnum:]]+:\s+.+,\1,g;t;d\"`"
+                                sed -rn \"s,^${if_id}:\s+(.+)@[[:alnum:]]+:\s+.+,\1,p\"`"
                 else
                     ns_port="`get_ns_ip_addr_show $ns_name| 
-                           sed -r \"s,[[:digit:]]+:\s+(.*${port_suffix})(@[[:alnum:]]+)?:\s+.+,\1,g;t;d\"`"
+                               sed -rn \"s,[[:digit:]]+:\s+(.*${port_suffix})(@[[:alnum:]]+)?:\s+.+,\1,p\"`"
                 fi
 
                 if [ -n "$ns_port" ]; then
@@ -437,7 +437,7 @@ load_bridges_port_ns_attach_info ()
 
                             mac="`get_ns_ip_addr_show $ns_name| \
                                   grep -A 1 $port_suffix| \
-                                  sed -r 's,.*link/ether\s+([[:alnum:]\:]+).+,\1,g;t;d'`"
+                                     sed -rn 's,.*link/ether\s+([[:alnum:]\:]+).+,\1,p'`"
                             echo $mac > $RESULTS_PATH_HOST/linux/ports/$port/veth_peer/hwaddr
                         else
                             echo "WARNING: ns veth pair peer (host) port $port not found"
@@ -458,7 +458,7 @@ load_bridges_port_ns_attach_info ()
                         fi
                         mac="`get_ns_ip_addr_show $ns_name| \
                               grep -A 1 $port| \
-                              sed -r 's,.*link/ether\s+([[:alnum:]\:]+).+,\1,g;t;d'`"
+                                  sed -rn 's,.*link/ether\s+([[:alnum:]\:]+).+,\1,p'`"
                         echo $mac > $port_path/hwaddr
                     fi
                 fi
@@ -475,16 +475,16 @@ load_bridges_flows ()
     for bridge in `ls $RESULTS_PATH_HOST/ovs/bridges`; do
         flows_path=$RESULTS_PATH_HOST/ovs/bridges/$bridge/flows
         get_ovs_ofctl_dump_flows $bridge > $flows_path
-        readarray -t cookies <<<"`sed -r 's/.*cookie=0x([[:alnum:]]+),.+/\1/g;t;d' $flows_path| sort -u`"
+        readarray -t cookies <<<"`sed -rn 's/.*cookie=0x([[:alnum:]]+),.+/\1/p' $flows_path| sort -u`"
         cookies_path=$RESULTS_PATH_HOST/ovs/bridges/$bridge/flowinfo/cookies
         mkdir -p $cookies_path
         for c in ${cookies[@]}; do
             grep "cookie=0x$c," $flows_path > $cookies_path/$c
         done
-        sed -r -e 's/cookie=[[:alnum:]]+,\s+//g' \
-                  -e 's/duration=[[:digit:]\.]+s,\s+//g' \
-                  -e 's/n_[[:alnum:]]+=[[:digit:]]+,\s+//g' \
-                  -e 's/[[:alnum:]]+_age=[[:digit:]]+,\s+//g' \
+        sed -r -e 's/^\s*cookie=[[:alnum:]]+,//' \
+            -e 's/\s+duration=[[:digit:]\.]+s,//' \
+            -e 's/\s+n_[[:alnum:]]+=[[:digit:]]+,//g' \
+            -e 's/\s+[[:alnum:]]+_age=[[:digit:]]+,//g;' \
             $flows_path > ${flows_path}.stripped
     done    
 }
@@ -494,7 +494,7 @@ load_bridges_flow_tables ()
     for bridge in `ls $RESULTS_PATH_HOST/ovs/bridges`; do
         tables_root=$RESULTS_PATH_HOST/ovs/bridges/$bridge/flowinfo/tables
         bridge_flows=$RESULTS_PATH_HOST/ovs/bridges/$bridge/flows
-        readarray -t tables<<<"`sed -r 's/.+table=([[:digit:]]+).+/\1/g;t;d' $bridge_flows| sort -un`"
+        readarray -t tables<<<"`sed -rn 's/.+table=([[:digit:]]+).+/\1/p' $bridge_flows| sort -un`"
         for t in "${tables[@]}"; do
             mkdir -p $tables_root/$t
             egrep "(^|\s+)table=$t," $bridge_flows > ${tables_root}/${t}/flows
@@ -572,10 +572,10 @@ load_bridges_port_flows ()
             current_bridge_jobs=0
             while read line; do
                 {
-                mod_dl_src_mac=`echo "$line"| sed -r 's/.+mod_dl_src:([[:alnum:]\:]+).+/\1/g;t;d'`
+                mod_dl_src_mac=`echo "$line"| sed -rn 's/.+mod_dl_src:([[:alnum:]\:]+).+/\1/p'`
                 orig_mac=""
                 if `echo "$line"| grep -q dl_dst`; then
-                    orig_mac=`echo "$line"| sed -r 's/.+,dl_dst=([[:alnum:]\:]+).+/\1/g;t;d'`
+                    orig_mac=`echo "$line"| sed -rn 's/.+,dl_dst=([[:alnum:]\:]+).+/\1/p'`
                 fi
                 if [ -n "$orig_mac" ]; then
                     # ingress i.e. if dst==remote replace src dvr_mac with local
@@ -584,14 +584,14 @@ load_bridges_port_flows ()
                     target_mac=$orig_mac
                 else
                     # egress i.e. if src==local set src=dvr_mac
-                    local_mac=`echo "$line"| sed -r 's/.+,dl_src=([[:alnum:]\:]+).+/\1/g;t;d'`
+                    local_mac=`echo "$line"| sed -rn 's/.+,dl_src=([[:alnum:]\:]+).+/\1/p'`
                     target_path=$mod_dl_src_root/egress
                     target_mac=$mod_dl_src_mac
                 fi
                 mkdir -p $target_path
                 local_mac_path="`egrep -l '$local_mac' $RESULTS_PATH_HOST/ovs/ports/*/hwaddr`"
                 if [ -n "$local_mac_path" ]; then
-                    rel_path="`echo "$local_mac_path"| sed -r "s,$RESULTS_PATH_HOST,../../../../../..,g"`"
+                    rel_path="`echo "$local_mac_path"| sed -rn "s,$RESULTS_PATH_HOST,../../../../../..,p"`"
                     ln -s $rel_path $target_path/$target_mac
                 else
                     echo "$local_mac" > $target_path/$target_mac
@@ -609,7 +609,7 @@ load_bridges_port_flows ()
         grep "nw_src" $bridge_flows_root/flows > $nw_src_out.tmp
         mkdir -p $nw_src_root
         if [ -s "$nw_src_out.tmp" ]; then
-            sed -r 's/.+nw_src=([[:digit:]\.]+)(\/[[:digit:]]+)?.+/\1/g;t;d' $nw_src_out.tmp| sort -u > $nw_src_out
+            sed -rn 's/.+nw_src=([[:digit:]\.]+)(\/[[:digit:]]+)?.+/\1/p' $nw_src_out.tmp| sort -u > $nw_src_out
             while read nw_src_addr; do
                 egrep "nw_src=${nw_src_addr}(/[0-9]+)?" $bridge_flows_root/flows > $nw_src_root/$nw_src_addr
             done < $nw_src_out
@@ -623,7 +623,7 @@ load_bridges_port_flows ()
         grep "arp_spa" $bridge_flows_root/flows > $arp_spa_out.tmp
         mkdir -p $arp_spa_root
         if [ -s "$arp_spa_out.tmp" ]; then
-            sed -r 's/.+arp_spa=([[:digit:]\.]+)(\/[[:digit:]]+)?.+/\1/g;t;d' $arp_spa_out.tmp| sort -u > $arp_spa_out
+            sed -rn 's/.+arp_spa=([[:digit:]\.]+)(\/[[:digit:]]+)?.+/\1/p' $arp_spa_out.tmp| sort -u > $arp_spa_out
             while read arp_spa_addr; do
                 egrep "arp_spa=${arp_spa_addr}(/[0-9]+)?" $bridge_flows_root/flows > $arp_spa_root/$arp_spa_addr
             done < $arp_spa_out
@@ -637,7 +637,7 @@ load_bridges_port_flows ()
         grep "dl_dst" $bridge_flows_root/flows > $dl_dst_out.tmp
         mkdir -p $dl_dst_root
         if [ -s "$dl_dst_out.tmp" ]; then
-            sed -r 's/.+dl_dst=([[:alnum:]\:]+).+/\1/g;t;d' $dl_dst_out.tmp| sort -u > $dl_dst_out
+            sed -rn 's/.+dl_dst=([[:alnum:]\:]+).+/\1/p' $dl_dst_out.tmp| sort -u > $dl_dst_out
             while read dl_dst_addr; do
                 egrep "dl_dst=${dl_dst_addr}" $bridge_flows_root/flows > $dl_dst_root/$dl_dst_addr
             done < $dl_dst_out
@@ -651,7 +651,7 @@ load_bridges_port_flows ()
         grep "dl_src" $bridge_flows_root/flows > $dl_src_out.tmp
         mkdir -p $dl_src_root
         if [ -s "$dl_src_out.tmp" ]; then
-            sed -r 's/.+dl_src=([[:alnum:]\:]+).+/\1/g;t;d' $dl_src_out.tmp| sort -u > $dl_src_out
+            sed -rn 's/.+dl_src=([[:alnum:]\:]+).+/\1/p' $dl_src_out.tmp| sort -u > $dl_src_out
             while read dl_src_addr; do
                 egrep "dl_src=${dl_src_addr}" $bridge_flows_root/flows > $dl_src_root/$dl_src_addr
             done < $dl_src_out
@@ -667,7 +667,7 @@ load_bridge_flow_regs ()
 {
     for bridge in `ls $RESULTS_PATH_HOST/ovs/bridges`; do
         readarray -t regs<<<"`get_ovs_ofctl_dump_flows $bridge | \
-            sed -r 's/.+(reg[[:digit:]]+)=(0x[[:alnum:]]+).+/\1=\2/g;t;d'| sort -u`"
+            sed -rn 's/.+(reg[[:digit:]]+)=(0x[[:alnum:]]+).+/\1=\2/p'| sort -u`"
         regspath=$RESULTS_PATH_HOST/ovs/bridges/$bridge/flowinfo/registers
         mkdir -p $regspath
         ((${#regs[@]})) && [ -n "${regs[0]}" ] || continue
@@ -702,7 +702,7 @@ load_bridge_conjunctive_flow_ids ()
 {
     for bridge in `ls $RESULTS_PATH_HOST/ovs/bridges`; do
         readarray -t conj_ids<<<"`cat $RESULTS_PATH_HOST/ovs/bridges/$bridge/flows| \
-            sed -r 's/.+conj_id=([[:digit:]]+).+/\1/g;t;d'| sort -u`"
+            sed -rn 's/.+conj_id=([[:digit:]]+).+/\1/p'| sort -u`"
         conj_ids_path=$RESULTS_PATH_HOST/ovs/bridges/$bridge/flowinfo/conj_ids
         mkdir -p $conj_ids_path
         ((${#conj_ids[@]})) && [ -n "${conj_ids[0]}" ] || continue
